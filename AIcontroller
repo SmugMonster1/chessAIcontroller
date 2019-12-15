@@ -1,0 +1,1499 @@
+public class AIController : MonoBehaviour
+{
+
+
+
+    public BoardManager bM;
+    public List<Chessman> active_pieces = new List<Chessman>();
+    private List<AIBoxController> white_pieces = new List<AIBoxController>();
+    private List<AIBoxController> black_pieces = new List<AIBoxController>();
+    private List<AIBoxController> target_pieces = new List<AIBoxController>();
+    private List<List<AIBoxController>> checkedPieces = new List<List<AIBoxController>>(100);
+    public List<GameObject> possibleMoveTiles = new List<GameObject>();
+    private List<List<GameObject>> pieceMoveLists = new List<List<GameObject>>();
+    private List<GameObject> activeMoveList = new List<GameObject>();
+    private List<GameObject> newList = new List<GameObject>();
+    private List<AIBoxController> newAIBoxList = new List<AIBoxController>();
+    private bool isMaximizerTurn = true;
+    private bool isMaxerTurn;
+    private float alpha;
+    private float beta;
+    private float alphainit;
+    private float betainit;
+    private int diff;
+    private float mV;
+    private float moveValue;
+    private float bestMoveValue;
+    private float boardValueHolder;
+    private float exitHolder;
+    public bool AI_Turn_Finished;
+    private AIBoxController activeAIBox;
+    private AIBoxController currentAIBox;
+    private AIBoxController bestMoveAIBox;
+    private Boardtile bestMoveTargetTile;
+    private List<AIBoxController> capturedPieces = new List<AIBoxController>();
+    private Vector3[] piecePosAtDepth;
+    private AIBoxController[] pieceCapturedAtDepth;
+
+    // Start is called before the first frame update
+    void Start()
+    {
+        
+        bM = GameObject.Find("chessBoard").GetComponent<BoardManager>();
+        diff = 1; //bM.difficulty;
+        bM.AI_Controller = transform.GetComponent<AIController>();
+        AI_Turn_Finished = false;
+
+    }
+
+    // Update is called once per frame
+    public void AI_Start_Turn()
+    {
+        if(AI_Turn_Finished == false)
+        {
+
+            Debug.Log("AI Beginning Turn");
+            bM.AI_Active_Piece = null;
+            bM.AI_Movement_Tile = null;
+            bestMoveAIBox = null;
+            bestMoveTargetTile = null;
+
+
+            //Update list of all pieces' AI boxes
+            active_pieces = bM.extantChesspieces;
+
+            isMaximizerTurn = true;
+
+            //Separate list into black and white AI Box controllers
+            foreach(var p in active_pieces)
+            {
+            
+
+                if(p.myAIBox.isWhite)
+                {
+                    white_pieces.Add(p.myAIBox);
+                } else {
+                    black_pieces.Add(p.myAIBox);
+                }
+
+            }
+
+            //Recursively calculate best tile to move to
+            exitHolder = CalcBestMove(diff, alphainit, betainit, isMaximizerTurn);
+            
+            
+
+            //Execute selected move
+            //bestMoveTargetTile is target move square boardtile
+            //bestMoveAIBox is AIbox of piece to move
+            bM.AI_Active_Piece = bestMoveAIBox.myParent;
+            bM.AI_Movement_Tile = bestMoveTargetTile;
+            bM.AI_Execute_Move();
+
+
+            //Cleanup, clear out lists
+            white_pieces.Clear();
+            black_pieces.Clear();
+            possibleMoveTiles.Clear();
+            newList.Clear();
+            pieceMoveLists.Clear();
+            activeMoveList.Clear();
+            capturedPieces.Clear();
+            checkedPieces.Clear();
+            newAIBoxList.Clear();
+
+            //Reset AI boxes
+            foreach(var k in black_pieces)
+            {
+                k.transform.position = k.myParent.transform.position;
+            }
+
+            foreach(var l in white_pieces)
+            {
+                l.transform.position = l.myParent.transform.position;
+            }
+
+            AI_Turn_Finished = true;
+        }
+
+
+    }
+
+
+
+    private float CalcBestMove(int depth, float alpha, float beta, bool isMaxerTurn)
+    {
+        //Depth = how many moves to look ahead. Currently freezing Unity (with an infinite loop, presumably) when first called with depth > 1
+
+        Debug.Log("CalcBestMove at depth of "+depth+" on turn "+bM.turnCounter);
+
+        //Set active list to correct color's pieces
+        if(isMaxerTurn)
+        {
+            target_pieces = black_pieces;
+            Debug.Log("Checking Maxer turn");
+        } else {
+            target_pieces = white_pieces;
+            Debug.Log("Checking Min turn");
+        }
+
+
+        //If we've checked all moves in this branch down to depth value, evaluate board and return the move's value
+        if (depth == 0)
+        {
+            mV = evaluateBoardValue();
+            boardValueHolder = 0f;
+            Debug.Log("Branch ended, evaluated board on turn "+bM.turnCounter+", move value = "+mV);
+            //set move value to final value of branch
+            
+            return mV;
+        }
+
+
+        //Shuffle order of target pieces to prevent locking up
+        for(int i = 0; i < target_pieces.Count; i++)
+        {
+            Debug.Log("Shuffling order of target pieces on turn"+bM.turnCounter);
+            AIBoxController temp = target_pieces[i];
+            int randomIndex = Random.Range(i,target_pieces.Count);
+            target_pieces[i] = target_pieces[randomIndex];
+            target_pieces[randomIndex] = temp;
+        }
+
+
+        //Loop through all current color's pieces to get their moves lists
+        foreach(var x in target_pieces)
+        {
+            //Populate possibleMoveTiles with all possible destination tiles for this piece
+
+            Debug.Log("LOOP START FOR Piece Type: "+x.myPieceType+" at "+x.CurrentX+","+x.CurrentY+" on turn "+bM.turnCounter,x);
+
+            //Clear list to hold this piece's possible destination tiles
+            possibleMoveTiles.Clear();
+            //Create new interim list to hold this piece's destination tiles
+            newList = new List<GameObject>();
+            
+            //============ MOVEMENT FETCHING STARTS===========//
+            #region Movement Fetching
+            if(x.myPieceType == "Pawn")
+        {
+
+            //White team move
+            if(x.isWhite)
+            {
+                //Diagonal Left
+                    if(x.CurrentX != 0 && x.CurrentY != 7)
+                    {
+                    //Get node at target square
+                    Vector3 pos = x.transform.position;
+                    x.target_pos = new Vector3(pos.x + 0 - 1, pos.y+1, pos.z + 0 + 1); //Checks square for possible movement
+                    RaycastHit hit;
+                    //Debug.DrawRay(x.target_pos,transform.TransformDirection(Vector3.down), Color.blue, 60);
+                        if(Physics.Raycast(x.target_pos, transform.TransformDirection(Vector3.down), out hit, 25f, LayerMask.GetMask("ChessPlane")))
+                        {
+                            x.hitnode = hit.transform.GetComponent<Boardtile>();
+                            if(x.hitnode.occupied_AI == true)
+                            {
+                            
+                            x.occ_code = x.hitnode.occupant_AI_code; 
+                                if(!x.occ_code.isWhite && !x.occ_code.captured)
+                                {
+                                    //If legal target, if not already on captured list this branch, add to possible moves
+                                    
+                                    //Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                                    Debug.Log("Diag left checked, Adding node to list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                                } 
+
+                            }
+
+                        }
+                    }
+                //Diagonal Right
+
+                    if(x.CurrentX != 7 && x.CurrentY != 7)
+                    {
+                    //Get node at target square
+                    Vector3 pos = x.transform.position;
+                    x.target_pos = new Vector3(pos.x + 0 + 1, pos.y+1, pos.z + 0 + 1); //Checks square for possible movement
+                    RaycastHit hit;
+                    //Debug.DrawRay(x.target_pos,transform.TransformDirection(Vector3.down), Color.blue, 60);
+                        if(Physics.Raycast(x.target_pos, transform.TransformDirection(Vector3.down), out hit, 25f, LayerMask.GetMask("ChessPlane")))
+                        {
+                            x.hitnode = hit.transform.GetComponent<Boardtile>();
+                            if(x.hitnode.occupied_AI == true)
+                            {
+                            
+                            x.occ_code = x.hitnode.occupant_AI_code;  
+                                if(!x.occ_code.isWhite)
+                                {
+                                    //If legal target
+                                    Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                                    Debug.Log("Diag right checked, Adding node to list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                                } 
+
+                            }
+
+                        }
+
+
+
+                    }
+
+
+                    
+                //Middle Forward
+                if(x.CurrentY != 7)
+                    {
+                    //Get node at target square
+                    Vector3 pos = x.transform.position;
+                    x.target_pos = new Vector3(pos.x + 0, pos.y+1, pos.z + 0 + 1); //Checks square for possible movement
+                    RaycastHit hit;
+                    //Debug.DrawRay(x.target_pos,transform.TransformDirection(Vector3.down), Color.blue, 60);
+                        if(Physics.Raycast(x.target_pos, transform.TransformDirection(Vector3.down), out hit, 25f, LayerMask.GetMask("ChessPlane")))
+                        {
+                            x.hitnode = hit.transform.GetComponent<Boardtile>();
+                            if(x.hitnode.occupied_AI == false)
+                            {
+                                    //If legal target
+                                    Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                                    Debug.Log("Adding empty node to list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                            }
+
+                        }
+
+                    }
+                
+
+                //Middle on first move
+                if(x.CurrentY == 1)
+                    {
+                    //Get node at first target square
+                    Vector3 pos = x.transform.position;
+                    x.target_pos = new Vector3(pos.x + 0, pos.y+1, pos.z + 0 + 1); //Checks square for possible movement
+                    RaycastHit hit;
+                //Debug.DrawRay(x.target_pos,transform.TransformDirection(Vector3.down), Color.blue, 60);
+                        if(Physics.Raycast(x.target_pos, transform.TransformDirection(Vector3.down), out hit, 25f, LayerMask.GetMask("ChessPlane")))
+                        {
+                            x.hitnode = hit.transform.GetComponent<Boardtile>();
+                            if(x.hitnode.occupied_AI == false)
+                            {                 
+                                    //If legal target
+                                    Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                                    Debug.Log("Adding empty node to list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                                    x.second_move_permitted = true;
+                            }
+
+                        }
+
+
+                            if(x.second_move_permitted)
+                            {
+                                //Get node at second target square
+                            x.target_pos = new Vector3(pos.x + 0, pos.y+1, pos.z + 0 + 2); //Checks square for possible movement
+                        //Debug.DrawRay(x.target_pos,transform.TransformDirection(Vector3.down), Color.blue, 60);
+                                if(Physics.Raycast(x.target_pos, transform.TransformDirection(Vector3.down), out hit, 25f, LayerMask.GetMask("ChessPlane")))
+                                {
+                                    x.hitnode = hit.transform.GetComponent<Boardtile>();
+                                    if(x.hitnode.occupied_AI == false)
+                                    {
+
+                                            //If legal target
+                                            Debug.Log("Hitnode to be added: "+x.hitnode);
+                                            var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                                            Debug.Log("Adding enpassant node to list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+
+
+                                    }
+
+                                }
+                            }
+
+                    }
+
+
+
+
+            } else {
+                //Black Pawn movement
+                //Diagonal Left
+
+                    if(x.CurrentX != 0 && x.CurrentY != 0)
+                    {
+                    //Get node at target square
+                    Vector3 pos = x.transform.position;
+                    x.target_pos = new Vector3(pos.x + 0 - 1, pos.y+1, pos.z + 0 - 1); //Checks square for possible movement
+                    RaycastHit hit;
+                 Debug.DrawRay(x.target_pos,transform.TransformDirection(Vector3.down), Color.blue, 60);
+                        if(Physics.Raycast(x.target_pos, transform.TransformDirection(Vector3.down), out hit, 25f, LayerMask.GetMask("ChessPlane")))
+                        {
+                            x.hitnode = hit.transform.GetComponent<Boardtile>();
+                            if(x.hitnode.occupied_AI == true)
+                            {
+                            
+                                x.occ_code = x.hitnode.occupant_AI_code;  
+                                if(x.occ_code.isWhite)
+                                {
+                                    //If legal target
+                                   Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                                   Debug.Log("Adding enemy node to "+x+" list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                                } 
+
+                            }
+
+                        }
+                    }
+                    
+                    
+                //Diagonal Right
+
+                    if(x.CurrentX != 7 && x.CurrentY != 0)
+                    {
+                    //Get node at target square
+                    Vector3 pos = x.transform.position;
+                    x.target_pos = new Vector3(pos.x + 0 + 1, pos.y+1, pos.z + 0 - 1); //Checks square for possible movement
+                    RaycastHit hit;
+                Debug.DrawRay(x.target_pos,transform.TransformDirection(Vector3.down), Color.blue, 60);
+                        if(Physics.Raycast(x.target_pos, transform.TransformDirection(Vector3.down), out hit, 25f, LayerMask.GetMask("ChessPlane")))
+                        {
+                            x.hitnode = hit.transform.GetComponent<Boardtile>();
+                            if(x.hitnode.occupied_AI == true)
+                            {
+                            
+                            x.occ_code = x.hitnode.occupant_AI_code;  
+                                if(x.occ_code.isWhite)
+                                {
+                                    //If legal target
+                                   Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                                   Debug.Log("Adding enemy node to "+x+" list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                                } 
+
+                            }
+
+                        }
+
+                    }
+
+
+
+
+                //Middle Forward
+                
+                if(x.CurrentY != 0)
+                    {
+                    //Get node at target square
+                    Vector3 pos = x.transform.position;
+                    x.target_pos = new Vector3(pos.x + 0, pos.y+1, pos.z + 0 - 1); //Checks square for possible movement
+                    RaycastHit hit;
+                Debug.DrawRay(x.target_pos,transform.TransformDirection(Vector3.down), Color.blue, 60);
+                        if(Physics.Raycast(x.target_pos, transform.TransformDirection(Vector3.down), out hit, 25f, LayerMask.GetMask("ChessPlane")))
+                        {
+                            x.hitnode = hit.transform.GetComponent<Boardtile>();
+                            if(x.hitnode.occupied_AI == false)
+                            {
+                                    //If legal target
+                                    Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                                    Debug.Log("Adding empty node to list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                            }
+
+                        }
+
+                    }
+                
+
+
+                //Middle on first move
+                    if(x.CurrentY == 6)
+                    {
+                    //Get node at first target square
+                    Vector3 pos = x.transform.position;
+                    x.target_pos = new Vector3(pos.x + 0, pos.y+1, pos.z + 0 - 1); //Checks square for possible movement
+                    RaycastHit hit;
+                Debug.DrawRay(x.target_pos,transform.TransformDirection(Vector3.down), Color.blue, 60);
+                        if(Physics.Raycast(x.target_pos, transform.TransformDirection(Vector3.down), out hit, 25f, LayerMask.GetMask("ChessPlane")))
+                        {
+                            x.hitnode = hit.transform.GetComponent<Boardtile>();
+                            if(x.hitnode.occupied_AI == false)
+                            {                 
+                                    //If legal target
+                                    Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                                    Debug.Log("Adding empty node to list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                                    x.second_move_permitted = true;
+                            }
+
+                        }
+
+                        //Get node at second target square
+                    if(x.second_move_permitted)
+                    {
+                    x.target_pos = new Vector3(pos.x + 0, pos.y+1, pos.z + 0 - 2); //Checks square for possible movement
+                Debug.DrawRay(x.target_pos,transform.TransformDirection(Vector3.down), Color.blue, 60);
+                        if(Physics.Raycast(x.target_pos, transform.TransformDirection(Vector3.down), out hit, 25f, LayerMask.GetMask("ChessPlane")))
+                        {
+                            x.hitnode = hit.transform.GetComponent<Boardtile>();
+                            if(x.hitnode.occupied_AI == false)
+                            {
+
+                                    //If legal target
+                                    Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                                    Debug.Log("Adding enpassant node to list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+
+
+                            }
+
+                        }
+
+                    }
+
+                    }
+
+
+            }
+
+        }
+
+        if(x.myPieceType == "Rook")
+        {
+            //Right Movement
+        x.i=0;
+        x.imax = 7-x.CurrentX;
+        while (true)
+        {
+           x.i++;
+           if(x.i>x.imax)
+            break; 
+
+            //Get node at target square
+             Vector3 pos = x.transform.position;
+             x.target_pos = new Vector3(x.CurrentX + 0.5f + x.i, pos.y+1, x.CurrentY + 0.5f); //Checks square for possible movement
+             RaycastHit hit;
+            //Debug.DrawRay(x.target_pos,transform.TransformDirection(Vector3.down), Color.blue, 60);
+                if(Physics.Raycast(x.target_pos, transform.TransformDirection(Vector3.down), out hit, 25f, LayerMask.GetMask("ChessPlane")))
+                {
+                    x.hitnode = hit.transform.GetComponent<Boardtile>();
+                    if(x.hitnode.occupied_AI == true)
+                    {
+                      x.occ_code = x.hitnode.occupant_AI_code;  
+                    } else {
+                        x.occ_code = null;
+                    }
+                }
+
+            if (x.occ_code==null)
+            {
+                Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    
+                                
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                Debug.Log("Adding unoccupied node to "+x+" list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+            } else {
+                if(x.occ_code.isWhite != x.isWhite)
+                {
+                   Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                   Debug.Log("Adding enemy node to "+x+" list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                }
+                break;
+            }
+        }
+
+        //Left Movement
+        x.j = 0;
+        x.jmax = x.CurrentX;
+        while (true)
+        {
+           x.j++;
+           if(x.j>x.jmax)
+            break; 
+
+            //Get node at target square
+             Vector3 pos = x.transform.position;
+             x.target_pos = new Vector3(x.CurrentX + 0.5f - x.j, pos.y+1, x.CurrentY+ 0.5f); //Checks square for possible movement
+             RaycastHit hit;
+            //Debug.DrawRay(x.target_pos,transform.TransformDirection(Vector3.down), Color.green, 60);
+                if(Physics.Raycast(x.target_pos, transform.TransformDirection(Vector3.down), out hit, 25f, LayerMask.GetMask("ChessPlane")))
+                {
+                    x.hitnode = hit.transform.GetComponent<Boardtile>();
+                    if(x.hitnode.occupied_AI == true)
+                    {
+                      x.occ_code = x.hitnode.occupant_AI_code;  
+                    } else {
+                        x.occ_code = null;
+                    }
+                }
+
+            if (x.occ_code==null)
+            {
+                Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                Debug.Log("Adding unoccupied node to "+x+" list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+            } else {
+                if(x.occ_code.isWhite != x.isWhite)
+                {
+                    Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                    Debug.Log("Adding enemy node to "+x+" list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                }
+                break;
+            }
+        }
+
+        //Upward Movement
+        x.k = 0;
+        x.kmax = 7-x.CurrentY;
+        while (true)
+        {
+           x.k++;
+           if(x.k>x.kmax)
+            break; 
+
+            //Get node at target square
+             Vector3 pos = x.transform.position;
+             x.target_pos = new Vector3(x.CurrentX + 0.5f, pos.y+1, x.CurrentY + 0.5f + x.k); //Checks square for possible movement
+             RaycastHit hit;
+            //Debug.DrawRay(x.target_pos,transform.TransformDirection(Vector3.down), Color.red, 60);
+                if(Physics.Raycast(x.target_pos, transform.TransformDirection(Vector3.down), out hit, 25f, LayerMask.GetMask("ChessPlane")))
+                {
+                    x.hitnode = hit.transform.GetComponent<Boardtile>();
+                    if(x.hitnode.occupied_AI == true)
+                    {
+                      x.occ_code = x.hitnode.occupant_AI_code;  
+                    } else {
+                        x.occ_code = null;
+                    }
+                }
+
+            if (x.occ_code==null)
+            {
+                Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                Debug.Log("Adding unoccupied node to "+x+" list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+            } else {
+                if(x.occ_code.isWhite != x.isWhite)
+                {
+                    Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                    Debug.Log("Adding enemy node to "+x+" list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                }
+                break;
+            }
+        }
+
+        //Downward Movement
+        x.l = 0;
+        x.lmax = x.CurrentY;
+        while (true)
+        {
+           x.l++;
+           if(x.l>x.lmax)
+            break; 
+
+            //Get node at target square
+             Vector3 pos = x.transform.position;
+             x.target_pos = new Vector3(x.CurrentX + 0.5f, pos.y+1, x.CurrentY - x.l + 0.5f); //Checks square for possible movement
+             RaycastHit hit;
+            //Debug.DrawRay(x.target_pos,transform.TransformDirection(Vector3.down), Color.yellow, 60);
+                if(Physics.Raycast(x.target_pos, transform.TransformDirection(Vector3.down), out hit, 25f, LayerMask.GetMask("ChessPlane")))
+                {
+                    x.hitnode = hit.transform.GetComponent<Boardtile>();
+                    if(x.hitnode.occupied_AI == true)
+                    {
+                      x.occ_code = x.hitnode.occupant_AI_code;  
+                    } else {
+                        x.occ_code = null;
+                    }
+                }
+
+            if (x.occ_code==null)
+            {
+                Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                Debug.Log("Adding unoccupied node to "+x+" list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+            } else {
+                if(x.occ_code.isWhite != x.isWhite)
+                {
+                    Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                    Debug.Log("Adding enemy node to "+x+" list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                }
+                break;
+            }
+        }
+
+        
+        }
+
+        if(x.myPieceType == "Bishop")
+        {
+           //Up Left Movement
+        x.i = 0; //i = how many squares we have checked to the left
+        x.imax = x.CurrentX; //imax = how many squares we need to check to the left till edge
+        x.j = 0;
+        x.jmax = 7-x.CurrentY;
+
+
+        while(true)
+        {
+            x.i++;
+            x.j++;
+            if(x.i>x.imax || x.j>x.jmax)
+                break;
+
+
+             //Get node at target square
+             Vector3 pos = x.transform.position;
+             x.target_pos = new Vector3(x.CurrentX + 0.5f - x.i, pos.y+1, x.CurrentY + 0.5f + x.j); //Checks square for possible movement
+             RaycastHit hit;
+            //Debug.DrawRay(x.target_pos,transform.TransformDirection(Vector3.down), Color.red, 60);
+                if(Physics.Raycast(x.target_pos, transform.TransformDirection(Vector3.down), out hit, 25f, LayerMask.GetMask("ChessPlane")))
+                {
+                    x.hitnode = hit.transform.GetComponent<Boardtile>();
+                    if(x.hitnode.occupied_AI == true)
+                    {
+        
+                      x.occ_code = x.hitnode.occupant_AI_code;  
+                    } else {
+                        x.occ_code = null;
+                    }
+                }
+            
+           
+            
+            if (x.occ_code == null)
+            {
+                Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                Debug.Log("Adding unoccupied node to "+x+" list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                
+            } else {
+                if(x.occ_code.isWhite != x.isWhite)
+                {
+                    Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                    Debug.Log("Adding enemy node to "+x+" list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                }   
+                
+                break;
+            }
+
+        } //Closes a while loop, ending a movement direction check
+
+        //Up Right Movement
+        x.i = 0; //i = how many squares we have checked to the left
+        x.imax = 7-x.CurrentX; //imax = how many squares we need to check to the left till edge
+        x.j = 0;
+        x.jmax = 7-x.CurrentY;
+
+
+        while(true)
+        {
+            x.i++;
+            x.j++;
+            if(x.i>x.imax || x.j>x.jmax)
+                break;
+
+
+             //Get node at target square
+             Vector3 pos = x.transform.position;
+             x.target_pos = new Vector3(x.CurrentX + 0.5f + x.i, pos.y+1, x.CurrentY + 0.5f + x.j); //Checks square for possible movement
+             RaycastHit hit;
+            //Debug.DrawRay(x.target_pos,transform.TransformDirection(Vector3.down), Color.red, 60);
+                if(Physics.Raycast(x.target_pos, transform.TransformDirection(Vector3.down), out hit, 25f, LayerMask.GetMask("ChessPlane")))
+                {
+                    x.hitnode = hit.transform.GetComponent<Boardtile>();
+                    if(x.hitnode.occupied_AI == true)
+                    {
+        
+                      x.occ_code = x.hitnode.occupant_AI_code;  
+                    } else {
+                        x.occ_code = null;
+                    }
+                }
+            
+           
+            
+            if (x.occ_code == null)
+            {
+                Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                Debug.Log("Adding unoccupied node to "+x+" list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                
+            } else {
+                if(x.occ_code.isWhite != x.isWhite)
+                {
+                    Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                    Debug.Log("Adding enemy node to "+x+" list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                }   
+                
+                break;
+            }
+
+        } //Closes a while loop, ending a movement direction check
+
+
+        //Down Right Movement
+        x.i = 0; //i = how many squares we have checked to the left
+        x.imax = 7-x.CurrentX; //imax = how many squares we need to check to the left till edge
+        x.j = 0;
+        x.jmax = x.CurrentY;
+
+
+        while(true)
+        {
+            x.i++;
+            x.j++;
+            if(x.i>x.imax || x.j>x.jmax)
+                break;
+
+
+             //Get node at target square
+             Vector3 pos = x.transform.position;
+             x.target_pos = new Vector3(x.CurrentX + 0.5f + x.i, pos.y+1, x.CurrentY + 0.5f - x.j); //Checks square for possible movement
+             RaycastHit hit;
+            //Debug.DrawRay(x.target_pos,transform.TransformDirection(Vector3.down), Color.red, 60);
+                if(Physics.Raycast(x.target_pos, transform.TransformDirection(Vector3.down), out hit, 25f, LayerMask.GetMask("ChessPlane")))
+                {
+                    x.hitnode = hit.transform.GetComponent<Boardtile>();
+                    if(x.hitnode.occupied_AI == true)
+                    {
+        
+                      x.occ_code = x.hitnode.occupant_AI_code;  
+                    } else {
+                       x.occ_code = null;
+                    }
+                }
+            
+           
+            
+            if (x.occ_code == null)
+            {
+                Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                Debug.Log("Adding unoccupied node to "+x+" list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                
+            } else {
+                if(x.occ_code.isWhite != x.isWhite)
+                {
+                    Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                    Debug.Log("Adding enemy node to "+x+" list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | Enemy isWhite: "+x.occ_code.isWhite+" | My isWhite: "+x.isWhite);
+                }   
+                
+                break;
+            }
+
+        } //Closes a while loop, ending a movement direction check
+
+
+
+        //Down Right Movement
+        x.i = 0; //i = how many squares we have checked to the left
+        x.imax = x.CurrentX; //imax = how many squares we need to check to the left till edge
+        x.j = 0;
+        x.jmax = x.CurrentY;
+
+
+        while(true)
+        {
+            x.i++;
+            x.j++;
+            if(x.i>x.imax || x.j>x.jmax)
+                break;
+
+
+             //Get node at target square
+             Vector3 pos = x.transform.position;
+             x.target_pos = new Vector3(x.CurrentX + 0.5f - x.i, pos.y+1, x.CurrentY + 0.5f - x.j); //Checks square for possible movement
+             RaycastHit hit;
+            //Debug.DrawRay(x.target_pos,transform.TransformDirection(Vector3.down), Color.red, 60);
+                if(Physics.Raycast(x.target_pos, transform.TransformDirection(Vector3.down), out hit, 25f, LayerMask.GetMask("ChessPlane")))
+                {
+                    x.hitnode = hit.transform.GetComponent<Boardtile>();
+                    if(x.hitnode.occupied_AI == true)
+                    {
+        
+                      x.occ_code = x.hitnode.occupant_AI_code;  
+                    } else {
+                        x.occ_code = null;
+                    }
+                }
+            
+           // Debug.Log("Target piece is white: "+x.occ_code.isWhite+" | Checking piece is white: "+x.isWhite+" | Eval check: "+(x.occ_code.isWhite != x.isWhite));
+            
+            if (x.occ_code == null)
+            {
+                Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                Debug.Log("Adding unoccupied node to "+x+" list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                
+            } else {
+                if(x.occ_code.isWhite != x.isWhite)
+                {
+                    Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                    Debug.Log("Adding enemy node to "+x+" list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | Enemy isWhite: "+x.occ_code.isWhite+" | My isWhite: "+x.isWhite);
+                }   
+                
+                break;
+            }
+
+        } //Closes a while loop, ending a movement direction check
+
+
+        }
+
+        if(x.myPieceType == "Knight")
+        {
+            //Up 2 Left 1
+        KnightMove(x.CurrentX-1, x.CurrentY+2, x);
+        //Up 2 Right 1
+        KnightMove(x.CurrentX+1, x.CurrentY+2, x);
+        //Up 1 Left 2
+        KnightMove(x.CurrentX-2, x.CurrentY+1, x);
+        //Up 1 Right 2
+        KnightMove(x.CurrentX+2, x.CurrentY+1, x);
+
+        //Down 2 Left 1
+        KnightMove(x.CurrentX-1, x.CurrentY-2, x);
+        //Down 2 Right 1
+        KnightMove(x.CurrentX+1, x.CurrentY-2, x);
+        //Down 1 Left 2
+        KnightMove(x.CurrentX-2, x.CurrentY-1, x);
+        //Down 1 Right 2
+        KnightMove(x.CurrentX+2, x.CurrentY-1, x);
+        }
+
+        if(x.myPieceType == "Queen")
+        {
+            //4DIR MOVEMENT
+        
+        
+        //DIAGONAL MOVEMENT
+        //Up Left Movement
+        x.i = 0; //i = how many squares we have checked to the left
+        x.imax = x.CurrentX; //imax = how many squares we need to check to the left till edge
+        x.j = 0;
+        x.jmax = 7-x.CurrentY;
+
+
+        while(true)
+        {
+            x.i++;
+            x.j++;
+            if(x.i>x.imax || x.j>x.jmax)
+                break;
+
+
+             //Get node at target square
+             Vector3 pos = x.transform.position;
+             x.target_pos = new Vector3(x.CurrentX + 0.5f - x.i, pos.y+1, x.CurrentY + 0.5f + x.j); //Checks square for possible movement
+             RaycastHit hit;
+           //Debug.DrawRay(x.target_pos,transform.TransformDirection(Vector3.down), Color.red, 60);
+                if(Physics.Raycast(x.target_pos, transform.TransformDirection(Vector3.down), out hit, 25f, LayerMask.GetMask("ChessPlane")))
+                {
+                    x.hitnode = hit.transform.GetComponent<Boardtile>();
+                    if(x.hitnode.occupied_AI == true)
+                    {
+        
+                      x.occ_code = x.hitnode.occupant_AI_code;  
+                    } else {
+                        x.occ_code = null;
+                    }
+                }
+            
+           
+            
+            if (x.occ_code == null)
+            {
+                Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                Debug.Log("Adding node to list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                
+            } else {
+                if(x.occ_code.isWhite != x.isWhite)
+                {
+                    Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                    Debug.Log("Adding node to list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                }   
+                
+                break;
+            }
+
+        } //Closes a while loop, ending a movement direction check
+
+        //Up Right Movement
+        x.i = 0; //i = how many squares we have checked to the left
+        x.imax = 7-x.CurrentX; //imax = how many squares we need to check to the left till edge
+        x.j = 0;
+        x.jmax = 7-x.CurrentY;
+
+
+        while(true)
+        {
+            x.i++;
+            x.j++;
+            if(x.i>x.imax || x.j>x.jmax)
+                break;
+
+
+             //Get node at target square
+             Vector3 pos = x.transform.position;
+             x.target_pos = new Vector3(x.CurrentX + 0.5f + x.i, pos.y+1, x.CurrentY + 0.5f + x.j); //Checks square for possible movement
+             RaycastHit hit;
+           //Debug.DrawRay(x.target_pos,transform.TransformDirection(Vector3.down), Color.red, 60);
+               if(Physics.Raycast(x.target_pos, transform.TransformDirection(Vector3.down), out hit, 25f, LayerMask.GetMask("ChessPlane")))
+                {
+                    x.hitnode = hit.transform.GetComponent<Boardtile>();
+                    if(x.hitnode.occupied_AI == true)
+                    {
+        
+                      x.occ_code = x.hitnode.occupant_AI_code;  
+                    } else {
+                        x.occ_code = null;
+                    }
+                }
+            
+           
+            
+            if (x.occ_code == null)
+            {
+                Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                Debug.Log("Adding node to list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                
+            } else {
+                if(x.occ_code.isWhite != x.isWhite)
+                {
+                    Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                    Debug.Log("Adding node to list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                }   
+                
+                break;
+            }
+
+        } //Closes a while loop, ending a movement direction check
+
+
+        //Down Right Movement
+        x.i = 0; //i = how many squares we have checked to the left
+        x.imax = 7-x.CurrentX; //imax = how many squares we need to check to the left till edge
+        x.j = 0;
+        x.jmax = x.CurrentY;
+
+
+        while(true)
+        {
+            x.i++;
+            x.j++;
+            if(x.i>x.imax || x.j>x.jmax)
+                break;
+
+
+             //Get node at target square
+             Vector3 pos = x.transform.position;
+             x.target_pos = new Vector3(x.CurrentX + 0.5f + x.i, pos.y+1, x.CurrentY + 0.5f - x.j); //Checks square for possible movement
+             RaycastHit hit;
+            //Debug.DrawRay(x.target_pos,transform.TransformDirection(Vector3.down), Color.red, 60);
+                if(Physics.Raycast(x.target_pos, transform.TransformDirection(Vector3.down), out hit, 25f, LayerMask.GetMask("ChessPlane")))
+                {
+                    x.hitnode = hit.transform.GetComponent<Boardtile>();
+                    if(x.hitnode.occupied_AI == true)
+                    {
+        
+                      x.occ_code = x.hitnode.occupant_AI_code;  
+                    } else {
+                        x.occ_code = null;
+                    }
+                }
+            
+           
+            
+            if (x.occ_code == null)
+            {
+                Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                Debug.Log("Adding node to list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                
+            } else {
+                if(x.occ_code.isWhite != x.isWhite)
+                {
+                    Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                    Debug.Log("Adding node to list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                }   
+                
+                break;
+            }
+
+        } //Closes a while loop, ending a movement direction check
+
+
+
+        //Down Right Movement
+        x.i = 0; //i = how many squares we have checked to the left
+        x.imax = x.CurrentX; //imax = how many squares we need to check to the left till edge
+        x.j = 0;
+        x.jmax = x.CurrentY;
+
+
+        while(true)
+        {
+            x.i++;
+            x.j++;
+            if(x.i>x.imax || x.j>x.jmax)
+                break;
+
+
+             //Get node at target square
+             Vector3 pos = x.transform.position;
+             x.target_pos = new Vector3(x.CurrentX + 0.5f - x.i, pos.y+1, x.CurrentY + 0.5f - x.j); //Checks square for possible movement
+             RaycastHit hit;
+           //Debug.DrawRay(x.target_pos,transform.TransformDirection(Vector3.down), Color.red, 60);
+                if(Physics.Raycast(x.target_pos, transform.TransformDirection(Vector3.down), out hit, 25f, LayerMask.GetMask("ChessPlane")))
+                {
+                    x.hitnode = hit.transform.GetComponent<Boardtile>();
+                    if(x.hitnode.occupied_AI == true)
+                    {
+        
+                      x.occ_code = x.hitnode.occupant_AI_code;  
+                    } else {
+                        x.occ_code = null;
+                    }
+                }
+            
+           
+            
+            if (x.occ_code == null)
+            {
+                Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                Debug.Log("Adding node to list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                
+            } else {
+                if(x.occ_code.isWhite != x.isWhite)
+                {
+                    Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                    Debug.Log("Adding node to list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                }   
+                
+                break;
+            }
+
+        } //Closes a while loop, ending a movement direction check
+
+        //Right Movement
+        x.i=0;
+        x.imax = 7-x.CurrentX;
+        while (true)
+        {
+           x.i++;
+           if(x.i>x.imax)
+            break; 
+
+            //Get node at target square
+             Vector3 pos = x.transform.position;
+             x.target_pos = new Vector3(x.CurrentX + 0.5f + x.i, pos.y+1, x.CurrentY + 0.5f); //Checks square for possible movement
+             RaycastHit hit;
+           //Debug.DrawRay(x.target_pos,transform.TransformDirection(Vector3.down), Color.blue, 60);
+                if(Physics.Raycast(x.target_pos, transform.TransformDirection(Vector3.down), out hit, 25f, LayerMask.GetMask("ChessPlane")))
+                {
+                    x.hitnode = hit.transform.GetComponent<Boardtile>();
+                    if(x.hitnode.occupied_AI == true)
+                    {
+                      x.occ_code = x.hitnode.occupant_AI_code;  
+                    } else {
+                        x.occ_code = null;
+                    }
+                }
+
+            if (x.occ_code==null)
+            {
+                Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                Debug.Log("Adding node to list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+            } else {
+                if(x.occ_code.isWhite != x.isWhite)
+                {
+                    Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                    Debug.Log("Adding node to list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                }
+                break;
+            }
+        }
+
+        //Left Movement
+        x.j = 0;
+        x.jmax = x.CurrentX;
+        while (true)
+        {
+           x.j++;
+           if(x.j>x.jmax)
+            break; 
+
+            //Get node at target square
+             Vector3 pos = x.transform.position;
+             x.target_pos = new Vector3(x.CurrentX + 0.5f - x.j, pos.y+1, x.CurrentY+ 0.5f); //Checks square for possible movement
+             RaycastHit hit;
+            //Debug.DrawRay(x.target_pos,transform.TransformDirection(Vector3.down), Color.green, 60);
+                if(Physics.Raycast(x.target_pos, transform.TransformDirection(Vector3.down), out hit, 25f, LayerMask.GetMask("ChessPlane")))
+                {
+                    x.hitnode = hit.transform.GetComponent<Boardtile>();
+                    if(x.hitnode.occupied_AI == true)
+                    {
+                      x.occ_code = x.hitnode.occupant_AI_code;  
+                    } else {
+                        x.occ_code = null;
+                    }
+                }
+
+            if (x.occ_code==null)
+            {
+                Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                Debug.Log("Adding node to list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+            } else {
+                if(x.occ_code.isWhite != x.isWhite)
+                {
+                    Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                    Debug.Log("Adding node to list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                }
+                break;
+            }
+        }
+
+        //Upward Movement
+        x.k = 0;
+        x.kmax = 7-x.CurrentY;
+        while (true)
+        {
+           x.k++;
+           if(x.k>x.kmax)
+            break; 
+
+            //Get node at target square
+             Vector3 pos = x.transform.position;
+             x.target_pos = new Vector3(x.CurrentX + 0.5f, pos.y+1, x.CurrentY + 0.5f + x.k); //Checks square for possible movement
+             RaycastHit hit;
+           //Debug.DrawRay(x.target_pos,transform.TransformDirection(Vector3.down), Color.red, 60);
+                if(Physics.Raycast(x.target_pos, transform.TransformDirection(Vector3.down), out hit, 25f, LayerMask.GetMask("ChessPlane")))
+                {
+                    x.hitnode = hit.transform.GetComponent<Boardtile>();
+                    if(x.hitnode.occupied_AI == true)
+                    {
+                      x.occ_code = x.hitnode.occupant_AI_code;  
+                    } else {
+                        x.occ_code = null;
+                    }
+                }
+
+            if (x.occ_code==null)
+            {
+                Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                Debug.Log("Adding node to list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+            } else {
+                if(x.occ_code.isWhite != x.isWhite)
+                {
+                    Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                    Debug.Log("Adding node to list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                }
+                break;
+            }
+        }
+
+        //Downward Movement
+        x.l = 0;
+        x.lmax = x.CurrentY;
+        while (true)
+        {
+           x.l++;
+           if(x.l>x.lmax)
+            break; 
+
+            //Get node at target square
+             Vector3 pos = x.transform.position;
+             x.target_pos = new Vector3(x.CurrentX + 0.5f, pos.y+1, x.CurrentY - x.l + 0.5f); //Checks square for possible movement
+             RaycastHit hit;
+            //Debug.DrawRay(x.target_pos,transform.TransformDirection(Vector3.down), Color.yellow, 60);
+                if(Physics.Raycast(x.target_pos, transform.TransformDirection(Vector3.down), out hit, 25f, LayerMask.GetMask("ChessPlane")))
+                {
+                    x.hitnode = hit.transform.GetComponent<Boardtile>();
+                    if(x.hitnode.occupied_AI == true)
+                    {
+                      x.occ_code = x.hitnode.occupant_AI_code;  
+                    } else {
+                        x.occ_code = null;
+                    }
+                }
+
+            if (x.occ_code==null)
+            {
+                Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                Debug.Log("Adding node to list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+            } else {
+                if(x.occ_code.isWhite != x.isWhite)
+                {
+                    Debug.Log("Hitnode to be added: "+x.hitnode);
+                                    var newTile = new GameObject();
+                                    newTile = x.hitnode.gameObject;
+                                    possibleMoveTiles.Add(newTile);
+                    Debug.Log("Adding node to list: "+x.hitnode.gameObject+"at "+x.hitnode.column+x.hitnode.row+" | New Count: "+possibleMoveTiles.Count, gameObject);
+                }
+                break;
+            }
+        }
+
+        
+        }
+
+        if(x.myPieceType == "King")
+        {
+            //Up
+        KnightMove(x.CurrentX, x.CurrentY+1, x);
+        //Up Right
+        KnightMove(x.CurrentX+1, x.CurrentY+1, x);
+        //Up Left
+        KnightMove(x.CurrentX-1, x.CurrentY+1, x);
+        //Left
+        KnightMove(x.CurrentX-1, x.CurrentY, x);
+        //Right
+        KnightMove(x.CurrentX+1, x.CurrentY, x);
+        //Down
+        KnightMove(x.CurrentX, x.CurrentY-1, x);
+        //Down Left
+        KnightMove(x.CurrentX-1, x.CurrentY-1, x);
+        //Down Right
+        KnightMove(x.CurrentX+1, x.CurrentY-1, x);
+        }
+        #endregion
+            //==============MOVEMENT FETCHING ENDS==========//
+
+            if(possibleMoveTiles.Count > 0)
+            {
+
+                //Add piece x's moves to newList
+                for(var i = 0; i < possibleMoveTiles.Count; i++)
+                {
+                    newList.Add(possibleMoveTiles[i]);   
+                }
+
+                //Add list of piece x's moves to list of all pieces' moves
+                pieceMoveLists.Add(newList);
+                //Add x to pieces that have been counted
+                List<AIBoxController> newAIBoxList = new List<AIBoxController>();
+                newAIBoxList.Add(x);
+                checkedPieces.Add(newAIBoxList);
+                //Now checkedPieces[i][0] references a piece and pieceMoveLists[i] is the list of that piece's possible moves
+            }
+        }
+
+
+
+
+            //Set default "best move" value (worst possible for current AI-turn, to be replaced at end of branch)
+            bestMoveValue = isMaxerTurn ? -999999f : 999999f;
+
+            for(var j = 0; j < checkedPieces.Count; j++)
+            {
+                Debug.Log("J index: "+j+" | Checked pieces count: "+checkedPieces.Count+" | Piece move list count: "+pieceMoveLists.Count);
+
+                //Set AI box to check
+                activeAIBox = checkedPieces[j][0];
+                //Set that AI box's list of possible moves
+                activeMoveList = pieceMoveLists[j];
+                
+
+                //Loop through and execute, calculate value, and then undo each move
+                for(var i = 0; i < activeMoveList.Count; i++)
+                {
+                    
+
+                    //Set current AIBox origin
+                    activeAIBox.originPos = activeAIBox.transform.position;
+                    //Move AIbox to target location, capturing enemy AI box if needed
+                    activeAIBox.transform.position = new Vector3(activeMoveList[i].transform.position.x, transform.position.y, activeMoveList[i].transform.position.z);
+                    if(activeMoveList[i].GetComponent<Boardtile>().occupied_AI == true)
+                    {
+                        capturedPieces.Add(activeMoveList[i].GetComponent<Boardtile>().occupant_AI_code);
+                        activeMoveList[i].GetComponent<Boardtile>().occupant_AI_code.captured = true; 
+                    }
+
+                    //Recursively check next move and if depth is 0, return board value for branch
+                    moveValue = CalcBestMove(depth-1,alpha,beta,!isMaxerTurn);
+
+                    if(isMaxerTurn)
+                    {
+                        if(moveValue > bestMoveValue)
+                        {
+                            Debug.Log("Set best move for maxer at depth of "+depth+" on turn "+bM.turnCounter);
+                            bestMoveValue = moveValue;
+                            bestMoveTargetTile = activeMoveList[i].GetComponent<Boardtile>();
+                            bestMoveAIBox = activeAIBox;
+                            Debug.Log("Updating best move piece to "+activeAIBox.myParent+" and best move target to "+activeMoveList[i].GetComponent<Boardtile>().column+activeMoveList[i].GetComponent<Boardtile>().row+" Move value = "+bestMoveValue);
+                        }
+                        alpha = Mathf.Max(alpha, moveValue);
+                    } else {
+                        if(moveValue < bestMoveValue)
+                        {
+                            Debug.Log("Set best move for min-er at depth of "+depth+" on turn "+bM.turnCounter);
+                            bestMoveValue = moveValue;
+                            bestMoveTargetTile = activeMoveList[i].GetComponent<Boardtile>();
+                            bestMoveAIBox = activeAIBox;
+                            Debug.Log("Updating best move piece to "+activeAIBox.myParent+" and best move target to "+activeMoveList[i].GetComponent<Boardtile>().column+activeMoveList[i].GetComponent<Boardtile>().row+" Move value = "+bestMoveValue);;
+                        }
+                        beta = Mathf.Min(beta, moveValue);
+                    }
+
+                    //Undo move we just did
+                    activeAIBox.transform.position = activeAIBox.originPos;
+                    if(capturedPieces.Contains(activeMoveList[i].GetComponent<Boardtile>().occupant_AI_code))
+                    {
+                        capturedPieces.Remove(activeMoveList[i].GetComponent<Boardtile>().occupant_AI_code);
+                        activeMoveList[i].GetComponent<Boardtile>().occupant_AI_code.captured = false;
+                    }
+                    
+                    //Check for alpha-beta pruning
+                    if(beta <= alpha)
+                    {
+                        break;
+                    }
+
+                } //Ends the move for-loop
+
+            } //Ends the check for piece j
+            
+
+
+
+
+        return bestMoveValue;
+
+
+    } //Closes recursive function
+
+
+
+private float evaluateBoardValue()
+{
+    foreach(var w in white_pieces)
+    {
+        if(capturedPieces.Contains(w))
+        {
+
+        } else 
+        {
+            boardValueHolder += w.pieceValue;
+        }
+    }
+
+    foreach(var w in black_pieces)
+    {
+        if(capturedPieces.Contains(w))
+        {
+
+        } else 
+        {
+            boardValueHolder += w.pieceValue;
+        }
+    }
+
+    return boardValueHolder;
+}
