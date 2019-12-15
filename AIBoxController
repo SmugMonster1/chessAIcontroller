@@ -1,0 +1,92 @@
+public class AIBoxController : MonoBehaviour
+{
+ 
+
+    public float CurrentX;
+    public float CurrentY;
+    public Vector3 target_pos;
+    public bool target_occupied;
+    public bool isWhite;
+    public string myPieceType;
+    public GameObject occ;
+    public AIBoxController occ_code;  
+    public Chessman myParent;
+    public AIController AI_controller;
+    public Boardtile hitnode;
+    public Vector3[] originPosAtDepth;
+    public Vector3 originPos;
+    public bool captured;
+    private Transform t;
+    public float i, j, k, l, imax, jmax, kmax, lmax;
+    public bool second_move_permitted;
+    public float pieceValue;
+ 
+void Start()
+{
+        t = transform; 
+        while(t.parent != null)
+        {
+            if (t.parent.GetComponent<Chessman>() != null)
+            {
+                myParent = t.parent.GetComponent<Chessman>();
+            }
+            t = t.parent.transform;
+        }
+
+        isWhite = myParent.isWhite;
+        myPieceType = myParent.pieceType;
+        myParent.myAIBox = transform.GetComponent<AIBoxController>();
+
+    //get AI controller
+    AI_controller = GameObject.Find("AI_Controller").GetComponent<AIController>();
+
+    //Set all black pieces to positive values since AI enemy will be black
+    if(isWhite == false)
+    {
+        if(myParent.pieceType == "Pawn")
+        {
+            pieceValue = 100f;
+        } else if (myParent.pieceType == "Rook")
+        {
+            pieceValue = 525f;
+        } else if (myParent.pieceType == "Bishop")
+        {
+            pieceValue = 350f;
+        } else if (myParent.pieceType == "Knight")
+        {
+            pieceValue = 350f;
+        } else if (myParent.pieceType == "Queen")
+        {
+            pieceValue = 1000f;
+        } else if (myParent.pieceType == "King")
+        {
+            pieceValue = 10000f;
+        }
+    } else {
+        if(myParent.pieceType == "Pawn")
+        {
+            pieceValue = -100f;
+        } else if (myParent.pieceType == "Rook")
+        {
+            pieceValue = -525f;
+        } else if (myParent.pieceType == "Bishop")
+        {
+            pieceValue = -350f;
+        } else if (myParent.pieceType == "Knight")
+        {
+            pieceValue = -350f;
+        } else if (myParent.pieceType == "Queen")
+        {
+            pieceValue = -1000f;
+        } else if (myParent.pieceType == "King")
+        {
+            pieceValue = -10000f;
+        }
+    }
+}
+
+void Update()
+{
+    CurrentX = transform.position.x - 0.5f;
+    CurrentY = transform.position.z - 0.5f;
+}
