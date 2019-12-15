@@ -1,0 +1,72 @@
+public class Boardtile : MonoBehaviour
+{
+   public int CurrentX{set;get;}
+    public int CurrentY{set;get;}
+    public bool occupied = false;
+    public string occupant_tag = null;
+    public bool occupied_AI = false;
+    public AIBoxController occupant_AI_code;
+    public string occupant_AI_tag = null;
+    public bool occupant_AI_isWhite;
+    public bool isWhite;
+    public Chessman tar;
+    public AIBoxController tar_AI;
+
+    public int row;
+    public string column; 
+
+   public void SetPosition(int x, int y)
+    {
+        CurrentX = x;
+        CurrentY = y;
+    }
+   
+   
+   public void CheckLocation()
+    {
+        Vector3 pos = transform.position;
+        RaycastHit hit;
+        //Debug.DrawRay(pos, transform.TransformDirection(Vector3.up), Color.green);
+        if(Physics.Raycast(pos, transform.TransformDirection(Vector3.up), out hit, 25f, LayerMask.GetMask("Default")))
+        {
+           tar = hit.transform.GetComponent<Chessman>();
+           if (tar != null)
+           {
+           tar.rowID = row;
+           tar.columnID = column;
+           occupied = true;
+           occupant_tag = tar.transform.gameObject.tag;
+           } 
+        } else {
+            occupied = false;
+            occupant_tag = null;
+        }
+
+    RaycastHit hit2;
+        //Debug.DrawRay(pos, transform.TransformDirection(Vector3.up), Color.green);
+        if(Physics.Raycast(pos, transform.TransformDirection(Vector3.up), out hit2, 25f, LayerMask.GetMask("AIplane")))
+        {
+           tar_AI = hit2.transform.GetComponent<AIBoxController>();
+           if (tar_AI != null)
+           {
+           
+           occupied_AI = true;
+           occupant_AI_isWhite = tar_AI.isWhite;
+           occupant_AI_code = tar_AI;
+
+
+           } 
+        } else {
+            occupied_AI = false;
+            occupant_AI_code = null;
+
+        }
+
+    }
+
+    // Update is called once per frame
+    void Update()
+    {
+        CheckLocation();
+    }
+}
